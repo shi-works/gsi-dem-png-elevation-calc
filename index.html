@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>地理院標高タイル RGB値及び標高の表示</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+    <script src='https://api.mapbox.com/mapbox-gl-js/v3.0.0-beta.1/mapbox-gl.js'></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.0-beta.1/mapbox-gl.css' rel='stylesheet' />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+    <script>
+        mapboxgl.accessToken = 'pk.eyJ1Ijoic2hpd29ya3MiLCJhIjoiY2szeHZjeXJsMDJzdDNsbXczdnN1b3hpNiJ9.VQg_5pGbF1qU_6FZ33Uf4g';
+        const map = new mapboxgl.Map({
+            container: 'map',
+            zoom: 11.82,
+            center: [138.7309, 35.33871],
+            pitch: 61,
+            bearing: 0,
+            hash: true,
+            attributionControl: false,
+            // style: 'mapbox://styles/mapbox/satellite-streets-v12'
+            style: {
+                'version': 8,
+                'sources': {
+                    'std': {
+                        'type': 'raster',
+                        'tiles': ['https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'],
+                        'tileSize': 256,
+                        'attribution': '<a href="https://maps.gsi.go.jp/development/ichiran.html#std" target="_blank">地理院タイル（標準地図）</a>'
+                    },
+                    'dem_png': {
+                        'type': 'raster',
+                        'tiles': ['https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png'],
+                        'tileSize': 256,
+                        'attribution': '<a href="https://maps.gsi.go.jp/development/ichiran.html#std" target="_blank">地理院タイル（標高タイル）</a>'
+                    }
+                },
+                'layers': [
+                    {
+                        id: "std",
+                        type: "raster",
+                        source: "std",
+                        minzoom: 0,
+                        maxzoom: 18
+                    },
+                    {
+                        id: "dem_png",
+                        type: "raster",
+                        source: "dem_png",
+                        minzoom: 0,
+                        maxzoom: 18,
+                        paint: {
+                            'raster-opacity': 0.7
+                        },
+                    },
+                ]
+            },
+        });
+
+        // ズーム・回転
+        map.addControl(new mapboxgl.NavigationControl());
+
+        // フルスクリーンモードのオンオフ
+        map.addControl(new mapboxgl.FullscreenControl());
+
+        // 現在位置表示
+        map.addControl(new mapboxgl.GeolocateControl({
+            positionOptions: {
+                enableHighAccuracy: false
+            },
+            fitBoundsOptions: { maxZoom: 18 },
+            trackUserLocation: true,
+            showUserLocation: true
+        }));
+
+        // スケール表示
+        map.addControl(new mapboxgl.ScaleControl({
+            maxWidth: 200,
+            unit: 'metric'
+        }));
+
+        // Attributionを折りたたみ表示
+        map.addControl(new mapboxgl.AttributionControl({
+            compact: true,
+            customAttribution: '（<a href="https://twitter.com/syanseto" target="_blank">Twitter</a> | <a href="https://github.com/shi-works/japan-heritage-map" target="_blank">Github</a>） '
+        }));
+
+        map.on('style.load', () => {
+            map.addSource('mapbox-dem', {
+                'type': 'raster-dem',
+                'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
+                'tileSize': 512,
+                'maxzoom': 14
+            });
+            map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+        });
+
+        // 数値PNGタイルからRGB値を取得
+        // 【参考1】https://gsj-seamless.jp/labs/datapng/gridpngtile.html
+        // 【参考2】https://gsj-seamless.jp/labs/datapng/sample/leaflet_shinsuishin1.html
+        /// ****************
+        // latLngToTile 緯度経度をタイル座標に変換する関数
+        //  latLng: 緯度経度オブジェクト（lat,lngフィールドを持ちます）
+        //  z: ズームレベル
+        //  戻り値: タイル座標オブジェクト（x, yフィールドを持ちます)
+        //    ※通常，地図ライブラリ内に同様の関数が用意されています．
+        /// ****************
+        function latLngToTile(lat, lng, z) {
+            const
+                w = Math.pow(2, (z === undefined) ? 0 : z) / 2,		// 世界全体のピクセル幅
+                yrad = Math.log(Math.tan(Math.PI * (90 + lat) / 360));
+
+            return { x: (lng / 180 + 1) * w, y: (1 - yrad / Math.PI) * w };
+        };
+
+        /// ****************
+        // getNumericalValue タイルURL，座標，ズームレベルを指定して数値を取得する関数
+        //	url: タイル画像のURLテンプレート．
+        //		ズームレベル，X, Y座標をそれぞれ{z},{x},{y}として埋め込む
+        //	ll: 緯度経度オブジェクト（lat,lngフィールドを持ちます）
+        //  z:　ズームレベル
+        //  factor: 数値を求めるときに使用する係数，デフォルト1
+        //  offset: 数値を求めるときに使用するオフセット，デフォルト0
+        //  invalid: 追加無効値を相当する数値で指定．デフォルトは指定なし
+        //  戻り値: 成功時に数値を受け取るプロミス．無効値の場合はNaNを受け取ります
+        /// ****************
+        function getNumericalValue(url, lat, lng, z, factor = 1, offset = 0, invalid = undefined) {
+            return new Promise(function (resolve, reject) {
+                const
+                    p = latLngToTile(lat, lng, z),
+                    x = Math.floor(p.x),			// タイルX座標
+                    y = Math.floor(p.y),			// タイルY座標
+                    i = (p.x - x) * 256,			// タイル内i座標
+                    j = (p.y - y) * 256,			// タイル内j座標
+                    img = new Image();
+
+                img.crossOrigin = 'anonymous';	// 画像ファイルからデータを取り出すために必要です
+                img.onload = function () {
+                    const
+                        canvas = document.createElement('canvas'),
+                        context = canvas.getContext('2d');
+                    let
+                        r2,
+                        v,
+                        data;
+
+                    canvas.width = 1;
+                    canvas.height = 1;
+                    context.drawImage(img, i, j, 1, 1, 0, 0, 1, 1);
+                    data = context.getImageData(0, 0, 1, 1).data;
+                    // console.log("RGB⇒" + " R:" + data[0] + " G:" + data[1] + " B:" + data[2])
+                    r = data[0]
+                    g = data[1]
+                    b = data[2]
+                    r2 = (data[0] < 2 ** 7) ? data[0] : data[0] - 2 ** 8;
+                    v = r2 * 2 ** 16 + data[1] * 2 ** 8 + data[2];
+                    if (data[3] !== 255 || (invalid != undefined && v == invalid)) {
+                        v = NaN;
+                    }
+                    resolve({ value: v * factor + offset, r: data[0], g: data[1], b: data[2] });
+                }
+                img.onerror = function () {
+                    reject(null);
+                }
+                img.src = url.replace('{z}', z).replace('{y}', y).replace('{x}', x);
+                // console.log("img.src:" + img.src)
+            });
+        };
+
+        // RGB値のポップアップ表示
+        map.on('click', function (e) {
+            const lng = e.lngLat.lng;
+            const lat = e.lngLat.lat;
+            const RasterTileUrl = 'https://cyberjapandata.gsi.go.jp/xyz/dem_png/{z}/{x}/{y}.png'
+            getNumericalValue(RasterTileUrl, lat, lng, Math.trunc(map.getZoom()), 0.01, 0, -(2 ** 23)).then(function (result) {
+                var zoomLevel = map.getZoom();
+                // console.log('現在のズームレベル（整数）は ' + Math.trunc(zoomLevel) + ' です。');
+                s = '緯度: ' + lat.toFixed(5) + ', ' + '経度: ' + lng.toFixed(4) + '<br />';
+                t = 'R: ' + result.r + ', ' + 'G: ' + result.g + ', ' + 'B: ' + result.b + '<br />';
+                u = s + t + '標高: ' + ((isNaN(result.value)) ? '取得できません' : result.value + 'm');
+                new mapboxgl.Popup()
+                    .setLngLat(e.lngLat)
+                    .setHTML(u)
+                    .addTo(map);
+            });
+        });
+
+    </script>
+
+</body>
+
+</html>
